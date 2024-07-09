@@ -1,0 +1,12 @@
+#! /bin/zsh
+
+cargo build
+
+rm -r keys
+rm -r test/*
+
+cp src/* test/
+
+echo "my-key" | ./target/debug/rustnsomware -c generate-keys 
+./target/debug/rustnsomware -c encrypt --public-key keys/my-key.pem.pub test
+
